@@ -10,7 +10,7 @@ def fetch_all_records():
 
     # Fetch failed transactions
     transactions_query = """
-        SELECT id, merchant_id, customer_id, amount, status, failure_reason,
+        SELECT id, merchant_id, customer_id, customer_name, amount, status, failure_reason,
                payment_method, created_at, retry_count
         FROM transactions
         WHERE status = 'failed'
@@ -22,7 +22,7 @@ def fetch_all_records():
 
     # Fetch abandoned checkout sessions
     checkout_query = """
-        SELECT id, customer_id, cart_value, stage_reached, abandoned_at, device
+        SELECT id, customer_id, customer_name, cart_value, stage_reached, abandoned_at, device
         FROM checkout_sessions
         WHERE stage_reached IN ('cart', 'payment_page', 'otp', 'abandoned')
         ORDER BY abandoned_at DESC
@@ -33,7 +33,7 @@ def fetch_all_records():
 
     # Fetch failed subscriptions
     subscriptions_query = """
-        SELECT id, customer_id, plan_amount, status, mandate_status,
+        SELECT id, customer_id, customer_name, plan_amount, status, mandate_status,
                last_charge_attempt, consecutive_failures
         FROM subscriptions
         WHERE status = 'failed_charge'

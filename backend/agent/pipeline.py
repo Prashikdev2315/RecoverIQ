@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Dict, Any, Optional
 from datetime import datetime
 from database import execute_query
@@ -136,6 +137,10 @@ def process_event(record: Dict[str, Any], record_type: str) -> Dict[str, Any]:
     print(f"Processing {record_type}: {record.get('id')}")
     print(f"{'='*60}")
 
+    # Track real pipeline processing time (wall-clock seconds)
+    pipeline_start = time.perf_counter()
+    pipeline_start_dt = datetime.now()
+
     try:
         # Step 0: Reconciliation check - verify state hasn't changed
         print("→ Step 0: Reconciliation check")
@@ -200,6 +205,10 @@ def process_event(record: Dict[str, Any], record_type: str) -> Dict[str, Any]:
             print(f"    Guardrail: {execution_result['guardrail_reason']}")
             print(f"    Fallback action: {execution_result['executed_action']}")
 
+        # Capture real processing duration BEFORE logging
+        pipeline_duration_seconds = round(time.perf_counter() - pipeline_start, 4)
+        print(f"  Pipeline duration: {pipeline_duration_seconds}s")
+
         # Step 5: Log to recovery_actions table
         print("→ Step 5: Audit logging")
         recovery_action_id = log_recovery_action(
@@ -208,7 +217,9 @@ def process_event(record: Dict[str, Any], record_type: str) -> Dict[str, Any]:
             classification,
             diagnosis,
             decision,
-            execution_result
+            execution_result,
+            processed_at=pipeline_start_dt,
+            processing_duration_seconds=pipeline_duration_seconds
         )
 
         print(f"  ✓ Logged to recovery_actions: {recovery_action_id}")
@@ -273,7 +284,9 @@ def log_recovery_action(
     classification: Dict[str, Any],
     diagnosis: Dict[str, Any],
     decision: Dict[str, Any],
-    execution_result: Dict[str, Any]
+    execution_result: Dict[str, Any],
+    processed_at: Optional[datetime] = None,
+    processing_duration_seconds: Optional[float] = None
 ) -> str:
     """
     Log the full decision trail to recovery_actions table.
@@ -320,6 +333,13 @@ def log_recovery_action(
     language = decision.get('language', 'en')
     action = execution_result['executed_action']
 
+    # Use real customer_name from record; fall back gracefully if missing
+    customer_name = (
+        record.get('customer_name')
+        or record.get('name')
+        or 'Customer'
+    )
+
     if language == 'hinglish' and action in ['send_reminder_sms', 'send_payment_link', 'retry_charge', 'offer_alternate_method']:
         try:
             from agent.message_generator import generate_message_for_action
@@ -327,7 +347,7 @@ def log_recovery_action(
                 action=action,
                 record=record,
                 diagnosis=diagnosis,
-                customer_name="Valued Customer"
+                customer_name=customer_name
             )
             if message_result.get('passes_compliance'):
                 reasoning_log['message_generation'] = {
@@ -352,8 +372,9 @@ def log_recovery_action(
     query = """
         INSERT INTO recovery_actions
         (target_type, target_id, detected_issue, proposed_action, executed_action,
-         confidence_score, channel, language, status, reasoning_log, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+         confidence_score, channel, language, status, reasoning_log, created_at,
+         processed_at, processing_duration_seconds)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
     """
 
@@ -368,7 +389,9 @@ def log_recovery_action(
         decision['language'],
         status,
         json.dumps(reasoning_log),
-        datetime.now()
+        datetime.now(),
+        processed_at or datetime.now(),
+        processing_duration_seconds
     )
 
     result = execute_query(query, params, fetch=True)

@@ -245,51 +245,45 @@ async def get_false_positive_rate(authorized: bool = Depends(verify_api_key)):
 @router.get("/latency")
 async def get_latency_metrics(authorized: bool = Depends(verify_api_key)):
     """
-    Get average time from detection to action taken.
+    Get average time the pipeline took to process each record (wall-clock seconds).
+    Source: processing_duration_seconds written by pipeline.py at the end of each run.
     """
 
-    # Calculate time between target record creation and recovery action
+    # Primary: use real pipeline processing time (set by pipeline.py perf_counter)
     query = """
         SELECT
-            AVG(EXTRACT(EPOCH FROM (ra.created_at -
-                CASE
-                    WHEN ra.target_type = 'transaction' THEN t.created_at
-                    WHEN ra.target_type = 'checkout_session' THEN cs.abandoned_at
-                    WHEN ra.target_type = 'subscription' THEN s.last_charge_attempt
-                END
-            ))) as avg_latency_seconds,
-            MIN(EXTRACT(EPOCH FROM (ra.created_at -
-                CASE
-                    WHEN ra.target_type = 'transaction' THEN t.created_at
-                    WHEN ra.target_type = 'checkout_session' THEN cs.abandoned_at
-                    WHEN ra.target_type = 'subscription' THEN s.last_charge_attempt
-                END
-            ))) as min_latency_seconds,
-            MAX(EXTRACT(EPOCH FROM (ra.created_at -
-                CASE
-                    WHEN ra.target_type = 'transaction' THEN t.created_at
-                    WHEN ra.target_type = 'checkout_session' THEN cs.abandoned_at
-                    WHEN ra.target_type = 'subscription' THEN s.last_charge_attempt
-                END
-            ))) as max_latency_seconds
-        FROM recovery_actions ra
-        LEFT JOIN transactions t ON ra.target_type = 'transaction' AND ra.target_id = t.id
-        LEFT JOIN checkout_sessions cs ON ra.target_type = 'checkout_session' AND ra.target_id = cs.id
-        LEFT JOIN subscriptions s ON ra.target_type = 'subscription' AND ra.target_id = s.id
-        WHERE ra.status = 'executed'
+            AVG(processing_duration_seconds) as avg_latency_seconds,
+            MIN(processing_duration_seconds) as min_latency_seconds,
+            MAX(processing_duration_seconds) as max_latency_seconds,
+            COUNT(*) as total_actions,
+            COUNT(processing_duration_seconds) as with_real_timing
+        FROM recovery_actions
+        WHERE processing_duration_seconds IS NOT NULL
     """
 
     result = execute_query(query, fetch=True)[0]
 
-    avg_latency = float(result['avg_latency_seconds'] or 0)
-    min_latency = float(result['min_latency_seconds'] or 0)
-    max_latency = float(result['max_latency_seconds'] or 0)
+    if result['with_real_timing'] and result['with_real_timing'] > 0:
+        avg_latency = float(result['avg_latency_seconds'] or 0)
+        min_latency = float(result['min_latency_seconds'] or 0)
+        max_latency = float(result['max_latency_seconds'] or 0)
+        data_source = "processing_duration_seconds"
+        note = f"Real pipeline wall-clock time across {result['with_real_timing']} actions"
+    else:
+        # No real timing data yet — return zeros with explanation
+        avg_latency = 0.0
+        min_latency = 0.0
+        max_latency = 0.0
+        data_source = "no_data"
+        note = "No pipeline runs with timing data yet. Run pipeline to populate."
 
     return {
-        "average_latency_seconds": round(avg_latency, 2),
-        "average_latency_minutes": round(avg_latency / 60, 2),
-        "min_latency_seconds": round(min_latency, 2),
-        "max_latency_seconds": round(max_latency, 2)
+        "average_latency_seconds": round(avg_latency, 4),
+        "average_latency_minutes": round(avg_latency / 60, 4),
+        "min_latency_seconds": round(min_latency, 4),
+        "max_latency_seconds": round(max_latency, 4),
+        "data_source": data_source,
+        "note": note
     }
 
 @router.get("/guardrail-hits")
